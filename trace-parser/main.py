@@ -4,59 +4,86 @@
 # Engine & Diagnostics Modules: Reserved for Parts 2 and 3 (state machine tracking, identity correlation, and cause-code checks).
 # Visualizer Module: Reserved for Part 4 (terminal summary tables and Mermaid/PlantUML diagram generation).
 
+import argparse
+import pyshark
+
+
 class IndexCard:
-    frame_number = 0
-    timestamp = 0
-    direction = " "  # e.g., "UE -> gNodeB" or "gNodeB -> AMF"
-    protocol_layer = " "  # "RRC", "NGAP", or "NAS"
-    message_name = " "  # e.g., "RRCSetupRequest"
-    details = dict()  # Key-value pairs {"ue_id": "12345", "cause": "mo-Data"}
+    def __init__(
+            self,
+            frame_number,
+            timestamp,
+            direction="Unknown",  # e.g., "UE -> gNodeB" or "gNodeB -> AMF"
+            protocol_layer="Unknown",  # "RRC", "NGAP", or "NAS"
+            message_name="Unknown",  # e.g., "RRCSetupRequest"
+            details=None,
+    ):
+        self.frame_number = frame_number
+        self.timestamp = timestamp
+        self.direction = direction  # e.g., "UE -> gNodeB" or "gNodeB -> AMF"
+        self.protocol_layer = protocol_layer  # "RRC", "NGAP", or "NAS"
+        self.message_name = message_name  # e.g., "RRCSetupRequest"
+        # Key-value pairs {"ue_id": "12345", "cause": "mo-Data"}
+        self.details = details if details is not None else {}
 
 
 def parse_trace_file(file_path):
     # Step 1: Open the file and ignore non-5G traffic
-    target_protocols = ("nr-rrc", "ngap", "nas-5gs")
+    raw_packets = pyshark.FileCapture(
+        file_path,
+        target_protocols=("nr-rrc", "ngap", "nas-5gs")
+    )
+
     clean_cards = []
 
-    with open(file_path) as f:
-        for line in f:
-            if any(proto in line for proto in target_protocols):
-                clean_cards.append(line.strip())
+    for packet in raw_packets:
+        frame_num = int(packet.number)
+        timest = float(packet.timestamp)
 
-    # Step 2: Loop through every matching packet one by one
-    for packet in clean_cards:
-        # Case A: It is a Radio message between Phone and Tower
-        if "NR-RRC" in packet:
-            card = IndexCard()
-            card.frame_number = packet.number
-            card.timestamp = packet.time
-            card.protocol_layer = "RRC"
-            # card.message_name   = GET_RRC_MESSAGE_NAME(packet) # e.g., "RRCSetupComplete"
-            # card.direction      = GET_DIRECTION(card.message_name)
-            # card.details        = EXTRACT_RRC_IDS(packet)
-            clean_cards.append(card)
+# Case 1: Radio message between Phone and Tower
+        if hasattr(packet, "nr_rrc"):
+            card = IndexCard(
+                frame_number=frame_num,
+                timestamp=timest,
+                protocol_layer="RRC"
+            )
 
-            # Case B: It is a Core message between Tower and Core Network
-            if "NGAP" in packet:
-                card = IndexCard()
-                card.frame_number = packet.number
-                card.timestamp = packet.time
-                card.protocol_layer = "NGAP"
-            # card.message_name   = GET_NGAP_MESSAGE_NAME(packet) // e.g., "InitialUEMessage"
-            # card.direction      = GET_DIRECTION(card.message_name)
-            # card.details        = EXTRACT_NGAP_IDS(packet)
-                clean_cards.append(card)
+        clean_cards.append(card)
+# Case 2: Core message between Tower and Core Network
+        if hasattr(packet, "ngap"):
+            card = IndexCard(
+                frame_number=frame_num,
+                timestamp=timest,
+                protocol_layer="NGAP"
+            )
 
-            # Case C: Check if a NAS letter was hidden inside the RRC or NGAP box
-            if "NAS-5GS" in packet:
-                nas_card = IndexCard()
-                nas_card.frame_number = packet.number
-                nas_card.timestamp = packet.time
-                nas_card.protocol_layer = "NAS"
-#             nas_card.message_name   = GET_NAS_MESSAGE_NAME(packet) // e.g., "RegistrationRequest"
-#             nas_card.direction      = GET_DIRECTION(nas_card.message_name)
-#             nas_card.details        = EXTRACT_NAS_DETAILS(packet)
-                clean_cards.append(nas_card)
+        clean_cards.append(card)
+# Case 3: Piggybacked NAS letter inside previous types of messages
+        if hasattr(packet, "nas_5gs"):
+            nas_card = IndexCard(
+                frame_number=frame_num,
+                timestamp=timest,
+                protocol_layer="NAS"
+            )
 
-#     CLOSE(raw_packets)
-#     RETURN clean_cards
+        clean_cards.append(nas_card)
+
+    raw_packets.close()
+    return clean_cards
+
+
+def main():
+    parser = argparse.ArgumentParser("5G/LTE Protocol Trace Parser")
+    parser.add_argument(
+        "pcap_file", help="Enter path to the input .pacp or .pcapng file"
+    )
+    args = parser.parse_args()
+
+    cards = parse_trace_file(args.pcap_file)
+    print(f"Parsed {len(cards)} signaling events: \n")
+    for card in cards:
+        print(card)
+
+
+if __name__ == "__main__":
+    main()
